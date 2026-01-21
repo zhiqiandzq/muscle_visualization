@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Muscle Visualization</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Sidebar with muscle list -->
+  <div id="sidebar">
+    <div class="sidebar-header">
+      <h2>Muscle List</h2>
+      <div class="search-box">
+        <input type="text" id="search-input" placeholder="Search muscles...">
+      </div>
+      <div class="selection-info">
+        <span id="selection-count">0 selected</span>
+        <button id="btn-clear-selection" class="btn-small">Clear</button>
+      </div>
+    </div>
+    <div id="muscle-list"></div>
+    <div class="sidebar-footer">
+      <button id="btn-show-all">Show All</button>
+      <button id="btn-hide-all">Hide All</button>
+      <button id="btn-rename" disabled>Rename</button>
+      <button id="btn-ungroup" disabled>Ungroup</button>
+    </div>
+    <div class="sidebar-io">
+      <button id="btn-export-json" title="Export name mappings to JSON file">Export</button>
+      <button id="btn-reset-all" title="Reset all to original names">Reset All</button>
+    </div>
+  </div>
+
+  <!-- Main 3D viewer -->
+  <div id="viewer-container">
+    <!-- Info tooltip for hover/click -->
+    <div id="info-tooltip" class="hidden"></div>
+    
+    <!-- Selected muscle info panel -->
+    <div id="selection-panel" class="hidden">
+      <div class="panel-header">
+        <span id="selected-name">No Selection</span>
+        <button id="btn-close-panel">×</button>
+      </div>
+      <div class="panel-content">
+        <div class="info-row">
+          <span class="info-label">Original Name(s):</span>
+          <span id="info-original-names" class="info-value"></span>
+        </div>
+        <div class="info-row">
+          <label class="info-label">Display Name:</label>
+          <input type="text" id="info-display-name" class="editable-name" placeholder="Enter display name...">
+        </div>
+      </div>
+      <div class="panel-actions">
+        <button id="btn-apply-name">Apply</button>
+        <button id="btn-reset-selected">Reset</button>
+        <button id="btn-hide">Hide</button>
+        <button id="btn-focus">Focus</button>
+      </div>
+    </div>
+    
+    <!-- Rename Modal -->
+    <div id="rename-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Rename Selected Muscles</h3>
+          <button id="btn-close-modal">×</button>
+        </div>
+        <div class="modal-body">
+          <p id="rename-count">0 muscles selected</p>
+          <input type="text" id="new-group-name" placeholder="Enter new group name...">
+          <div class="modal-hint">
+            All selected muscles will share this display name.
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="btn-cancel-rename" class="btn-secondary">Cancel</button>
+          <button id="btn-confirm-rename" class="btn-primary">Apply</button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Ungroup Modal -->
+    <div id="ungroup-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Ungroup Muscles</h3>
+          <button id="btn-close-ungroup-modal">×</button>
+        </div>
+        <div class="modal-body">
+          <p id="ungroup-info">This will restore the original names for selected muscles.</p>
+          <div id="ungroup-list" class="ungroup-list"></div>
+          <div class="modal-hint">
+            Check the muscles you want to ungroup. They will be restored to their original names.
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="btn-cancel-ungroup" class="btn-secondary">Cancel</button>
+          <button id="btn-confirm-ungroup" class="btn-primary">Ungroup Selected</button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Loading indicator -->
+    <div id="loading">
+      <div class="spinner"></div>
+      <span>Loading model...</span>
+    </div>
+  </div>
+
+  <!-- Import map for ES modules -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  
+  <script type="module" src="main.js"></script>
+</body>
+</html>
