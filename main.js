@@ -4,7 +4,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 // ==================== Configuration ====================
 const CONFIG = {
-  modelPath: '/models/muslc_avatar_truncate.glb',  // 修改为你的模型路径
+  modelPath: '/models/muslce_avatar_with_pose_v3.glb',  // 修改为你的模型路径
   musclePrefix: 'muscle_',
   colors: {
     background: 0xf5f5f5,
@@ -183,6 +183,10 @@ function setupEventListeners() {
   
   // Export JSON
   document.getElementById('btn-export-json').addEventListener('click', exportToJsonFile);
+  document.getElementById('btn-import-json').addEventListener('click', () => {
+    document.getElementById('import-file-input').click();
+  });
+  document.getElementById('import-file-input').addEventListener('change', importFromJsonFile);
   document.getElementById('btn-reset-all').addEventListener('click', resetAllNames);
 }
 
@@ -991,6 +995,60 @@ function exportToJsonFile() {
   console.log(`Exported ${originalToDisplayName.size} name mappings to JSON file`);
 }
 
+// 从 JSON 文件导入
+function importFromJsonFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const mapping = JSON.parse(e.target.result);
+      
+      // Validate mapping format
+      if (typeof mapping !== 'object' || mapping === null) {
+        throw new Error('Invalid JSON format: expected an object');
+      }
+      
+      let importCount = 0;
+      let skippedCount = 0;
+      
+      // Apply mappings only for muscles that exist in current model
+      for (const [originalName, displayName] of Object.entries(mapping)) {
+        if (meshByOriginalName.has(originalName)) {
+          originalToDisplayName.set(originalName, displayName);
+          importCount++;
+        } else {
+          skippedCount++;
+        }
+      }
+      
+      // Rebuild groups and update UI
+      rebuildMuscleGroups();
+      updateMuscleList();
+      saveNameMappingToStorage();
+      clearSelection();
+      
+      console.log(`📂 Imported ${importCount} name mappings from JSON file (${skippedCount} skipped - not found in model)`);
+      alert(`Successfully imported ${importCount} name mappings.${skippedCount > 0 ? ` (${skippedCount} entries skipped - muscles not found in current model)` : ''}`);
+      
+    } catch (err) {
+      console.error('Failed to import JSON file:', err);
+      alert(`Failed to import: ${err.message}`);
+    }
+  };
+  
+  reader.onerror = () => {
+    console.error('Failed to read file');
+    alert('Failed to read file');
+  };
+  
+  reader.readAsText(file);
+  
+  // Reset file input so the same file can be selected again
+  event.target.value = '';
+}
+
 // 暴露到全局，方便调试
 window.muscleViewer = {
   exportNameMapping,
@@ -999,6 +1057,7 @@ window.muscleViewer = {
   setDisplayName,
   clearAllMappings,
   exportToJsonFile,
+  importFromJsonFile,
   getOriginalToDisplayMap: () => originalToDisplayName,
   getMuscleGroups: () => muscleGroups,
   getMeshByOriginalName: () => meshByOriginalName,
