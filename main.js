@@ -4,18 +4,19 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 // ==================== Configuration ====================
 const CONFIG = {
-  modelPath: '/models/muslce_avatar_with_name_v6.glb',  // 修改为你的模型路径
-  // 肌肉mesh识别前缀
-  musclePrefix: 'muscle_',
+  modelPath: '/models/muslce_avatar_with_name_add_v7.glb',  // 修改为你的模型路径
+  // 皮肤mesh识别关键字（除此之外都是肌肉）
+  skinKeyword: 'integumentary_system',
   colors: {
     background: 0xf5f5f5,
     defaultMuscle: 0xcc8888,      // 默认肌肉颜色
     highlightMuscle: 0xff4444,    // 高亮颜色
     hoverMuscle: 0xffaa44,        // 悬停颜色
-    otherMesh: 0xdddddd,          // 其他mesh颜色
+    otherMesh: 0xdddddd,          // 其他mesh颜色（皮肤等）
   },
   opacity: {
     muscle: 0.9,
+    muscleWhenOtherHighlighted: 0.2,  // 当其他肌肉高亮时的透明度
     otherMesh: 0.3,
   }
 };
@@ -205,15 +206,16 @@ function loadModel() {
         if (child.isMesh || child.isSkinnedMesh) {
           const name = child.name.toLowerCase();
           
-          // 检查是否是肌肉 mesh（以 muscle_ 开头）
-          if (name.startsWith(CONFIG.musclePrefix)) {
+          // 检查是否是皮肤 mesh（包含 integumentary_system）
+          // 除了皮肤之外的都是肌肉 mesh
+          if (name.includes(CONFIG.skinKeyword)) {
+            // This is skin - make semi-transparent and non-interactive
+            setupOtherMesh(child);
+            otherMeshes.push(child);
+          } else {
             // This is a muscle mesh
             setupMuscleMesh(child);
             muscleMeshes.push(child);
-          } else {
-            // Other meshes - make semi-transparent and non-interactive
-            setupOtherMesh(child);
-            otherMeshes.push(child);
           }
         }
       });
@@ -229,7 +231,9 @@ function loadModel() {
       // Hide loading indicator
       document.getElementById('loading').style.display = 'none';
       
-      console.log(`Loaded ${muscleMeshes.length} muscle meshes`);
+      console.log(`✅ Loaded ${muscleMeshes.length} muscle meshes, ${otherMeshes.length} other meshes (skin)`);
+      console.log('Muscle meshes:', muscleMeshes.map(m => m.name));
+      console.log('Other meshes (skin):', otherMeshes.map(m => m.name));
     },
     (progress) => {
       const percent = (progress.loaded / progress.total * 100).toFixed(0);
@@ -263,6 +267,14 @@ function setupMuscleMesh(mesh) {
   
   // 建立原始名称到mesh的映射
   meshByOriginalName.set(mesh.name, mesh);
+  
+  // 对于 SkinnedMesh，确保几何体 bounding 正确计算
+  if (mesh.isSkinnedMesh) {
+    mesh.geometry.computeBoundingBox();
+    mesh.geometry.computeBoundingSphere();
+    // 强制更新矩阵
+    mesh.updateMatrixWorld(true);
+  }
 }
 
 function setupOtherMesh(mesh) {
@@ -629,9 +641,30 @@ function selectMuscleGroup(meshes, displayName) {
   // 清除之前的高亮
   clearHighlight();
   
+  // 创建高亮mesh的Set用于快速查找
+  const highlightedSet = new Set(meshes.map(m => m.uuid));
+  
+  // 降低其他肌肉的透明度，让高亮肌肉更明显
+  muscleMeshes.forEach(muscle => {
+    if (!highlightedSet.has(muscle.uuid)) {
+      // 非高亮肌肉变淡
+      muscle.material.opacity = CONFIG.opacity.muscleWhenOtherHighlighted;
+      muscle.material.depthWrite = false;
+      muscle.renderOrder = 0;
+    }
+  });
+  
+  // 皮肤也变得更透明
+  otherMeshes.forEach(mesh => {
+    mesh.material.opacity = 0.05;
+  });
+  
   // 高亮所有相关的mesh
   meshes.forEach(mesh => {
     mesh.material.color.setHex(CONFIG.colors.highlightMuscle);
+    mesh.material.opacity = 1.0;  // 完全不透明
+    mesh.material.depthWrite = true;
+    mesh.renderOrder = 999;  // 最后渲染，显示在最前
     if (mesh.material.emissive) {
       mesh.material.emissive.setHex(0x331111);
     }
@@ -666,11 +699,20 @@ function selectMuscle(mesh) {
 }
 
 function clearHighlight() {
+  // 恢复肌肉的原始状态
   muscleMeshes.forEach(mesh => {
     mesh.material.color.setHex(CONFIG.colors.defaultMuscle);
+    mesh.material.opacity = CONFIG.opacity.muscle;
+    mesh.material.depthWrite = true;
+    mesh.renderOrder = 0;
     if (mesh.material.emissive) {
       mesh.material.emissive.setHex(0x000000);
     }
+  });
+  
+  // 恢复皮肤的原始透明度
+  otherMeshes.forEach(mesh => {
+    mesh.material.opacity = CONFIG.opacity.otherMesh;
   });
 }
 
@@ -837,10 +879,22 @@ function onMouseMove(event) {
   
   // Raycast only against muscle meshes
   raycaster.setFromCamera(mouse, camera);
-  const intersects = raycaster.intersectObjects(muscleMeshes, true);
+  const intersects = raycaster.intersectObjects(muscleMeshes, false);
   
-  // Find first visible muscle
-  const hit = intersects.find(i => i.object.visible && i.object.userData.isMuscle);
+  // Find first visible muscle - 直接检查 object 或者向上查找父对象
+  let hit = null;
+  for (const intersect of intersects) {
+    let obj = intersect.object;
+    // 向上遍历查找标记为肌肉的对象
+    while (obj) {
+      if (obj.visible && obj.userData.isMuscle) {
+        hit = { ...intersect, object: obj };
+        break;
+      }
+      obj = obj.parent;
+    }
+    if (hit) break;
+  }
   
   if (hit) {
     const mesh = hit.object;
@@ -862,8 +916,10 @@ function onMouseMove(event) {
       }
     }
     
-    // Show tooltip
-    showTooltip(mesh.name, event.clientX, event.clientY);
+    // Show tooltip - 显示自定义名称（如果有的话）
+    const originalName = mesh.userData.originalName || mesh.name;
+    const displayName = originalToDisplayName.get(originalName) || originalName;
+    showTooltip(displayName, event.clientX, event.clientY);
   } else {
     // No hit - reset hover state
     renderer.domElement.style.cursor = 'default';
@@ -880,10 +936,22 @@ function onMouseMove(event) {
 function onMouseClick(event) {
   // Raycast
   raycaster.setFromCamera(mouse, camera);
-  const intersects = raycaster.intersectObjects(muscleMeshes, true);
+  const intersects = raycaster.intersectObjects(muscleMeshes, false);
   
-  // Find first visible muscle
-  const hit = intersects.find(i => i.object.visible && i.object.userData.isMuscle);
+  // Find first visible muscle - 直接检查 object 或者向上查找父对象
+  let hit = null;
+  for (const intersect of intersects) {
+    let obj = intersect.object;
+    // 向上遍历查找标记为肌肉的对象
+    while (obj) {
+      if (obj.visible && obj.userData.isMuscle) {
+        hit = { ...intersect, object: obj };
+        break;
+      }
+      obj = obj.parent;
+    }
+    if (hit) break;
+  }
   
   if (hit) {
     selectMuscle(hit.object);
