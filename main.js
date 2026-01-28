@@ -44,13 +44,31 @@ let meshByOriginalName = new Map();  // originalName -> mesh
 // LocalStorage key
 const STORAGE_KEY = 'muscle_display_names';
 
+// 从 JSON 文件加载默认肌肉名称映射
+async function loadDefaultMuscleNames() {
+  try {
+    const response = await fetch('/data/muscle_merge.json');
+    if (response.ok) {
+      const mapping = await response.json();
+      Object.entries(mapping).forEach(([original, display]) => {
+        // 只有当 localStorage 中没有该映射时才使用默认值
+        if (!originalToDisplayName.has(original)) {
+          originalToDisplayName.set(original, display);
+        }
+      });
+      console.log(`📂 Loaded ${Object.keys(mapping).length} default muscle names from JSON`);
+    }
+  } catch (e) {
+    console.error('Failed to load default muscle names from JSON:', e);
+  }
+}
+
 // 从 localStorage 加载映射
 function loadNameMappingFromStorage() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const mapping = JSON.parse(stored);
-      originalToDisplayName.clear();
       Object.entries(mapping).forEach(([original, display]) => {
         originalToDisplayName.set(original, display);
       });
@@ -218,16 +236,19 @@ function loadModel() {
 
       scene.add(model);
       
-      // 从 localStorage 加载保存的名称映射
+      // 先从 localStorage 加载用户自定义的名称映射
       loadNameMappingFromStorage();
       
-      // Build sidebar muscle list
-      buildMuscleList();
-      
-      // Hide loading indicator
-      document.getElementById('loading').style.display = 'none';
-      
-      console.log(`Loaded ${muscleMeshes.length} muscle meshes`);
+      // 然后从 JSON 文件加载默认肌肉名称（不会覆盖已有的映射）
+      loadDefaultMuscleNames().then(() => {
+        // Build sidebar muscle list
+        buildMuscleList();
+        
+        // Hide loading indicator
+        document.getElementById('loading').style.display = 'none';
+        
+        console.log(`Loaded ${muscleMeshes.length} muscle meshes`);
+      });
     },
     (progress) => {
       const percent = (progress.loaded / progress.total * 100).toFixed(0);
