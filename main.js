@@ -4,7 +4,8 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 // ==================== Configuration ====================
 const CONFIG = {
-  modelPath: '/models/muslce_avatar_with_pose_v3.glb',  // 修改为你的模型路径
+  modelPath: '/models/muslce_avatar_with_name_v6.glb',  // 修改为你的模型路径
+  // 肌肉mesh识别前缀
   musclePrefix: 'muscle_',
   colors: {
     background: 0xf5f5f5,
@@ -44,31 +45,13 @@ let meshByOriginalName = new Map();  // originalName -> mesh
 // LocalStorage key
 const STORAGE_KEY = 'muscle_display_names';
 
-// 从 JSON 文件加载默认肌肉名称映射
-async function loadDefaultMuscleNames() {
-  try {
-    const response = await fetch('/data/muscle_merge.json');
-    if (response.ok) {
-      const mapping = await response.json();
-      Object.entries(mapping).forEach(([original, display]) => {
-        // 只有当 localStorage 中没有该映射时才使用默认值
-        if (!originalToDisplayName.has(original)) {
-          originalToDisplayName.set(original, display);
-        }
-      });
-      console.log(`📂 Loaded ${Object.keys(mapping).length} default muscle names from JSON`);
-    }
-  } catch (e) {
-    console.error('Failed to load default muscle names from JSON:', e);
-  }
-}
-
 // 从 localStorage 加载映射
 function loadNameMappingFromStorage() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const mapping = JSON.parse(stored);
+      originalToDisplayName.clear();
       Object.entries(mapping).forEach(([original, display]) => {
         originalToDisplayName.set(original, display);
       });
@@ -222,6 +205,7 @@ function loadModel() {
         if (child.isMesh || child.isSkinnedMesh) {
           const name = child.name.toLowerCase();
           
+          // 检查是否是肌肉 mesh（以 muscle_ 开头）
           if (name.startsWith(CONFIG.musclePrefix)) {
             // This is a muscle mesh
             setupMuscleMesh(child);
@@ -236,19 +220,16 @@ function loadModel() {
 
       scene.add(model);
       
-      // 先从 localStorage 加载用户自定义的名称映射
+      // 从 localStorage 加载用户自定义的名称映射（如果有）
       loadNameMappingFromStorage();
       
-      // 然后从 JSON 文件加载默认肌肉名称（不会覆盖已有的映射）
-      loadDefaultMuscleNames().then(() => {
-        // Build sidebar muscle list
-        buildMuscleList();
-        
-        // Hide loading indicator
-        document.getElementById('loading').style.display = 'none';
-        
-        console.log(`Loaded ${muscleMeshes.length} muscle meshes`);
-      });
+      // Build sidebar muscle list
+      buildMuscleList();
+      
+      // Hide loading indicator
+      document.getElementById('loading').style.display = 'none';
+      
+      console.log(`Loaded ${muscleMeshes.length} muscle meshes`);
     },
     (progress) => {
       const percent = (progress.loaded / progress.total * 100).toFixed(0);
