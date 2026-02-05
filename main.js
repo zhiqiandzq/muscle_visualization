@@ -4,18 +4,27 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 // ==================== Configuration ====================
 const CONFIG = {
-  modelPath: '/models/muslce_avatar_with_pose_v3.glb',  // 修改为你的模型路径
+  modelPath: '/models/muslce_avatar_with_pose_v8(rename).glb',  // 修改为你的模型路径
   musclePrefix: 'muscle_',
   colors: {
     background: 0xf5f5f5,
     defaultMuscle: 0xcc8888,      // 默认肌肉颜色
-    highlightMuscle: 0xff4444,    // 高亮颜色
-    hoverMuscle: 0xffaa44,        // 悬停颜色
+    highlightMuscle: 0xff2222,    // 高亮颜色（更鲜艳）
+    highlightEmissive: 0xff0000,  // 高亮发光颜色
+    hoverMuscle: 0xffcc00,        // 悬停颜色（更亮的黄色）
+    hoverEmissive: 0xff8800,      // 悬停发光颜色
     otherMesh: 0xdddddd,          // 其他mesh颜色
   },
   opacity: {
     muscle: 0.9,
+    muscleWhenOtherHighlighted: 0.15,  // 当其他肌肉高亮时的透明度
     otherMesh: 0.3,
+  },
+  // 高亮动画设置
+  highlight: {
+    pulseSpeed: 2.0,              // 脉动速度
+    pulseMin: 0.5,                // 最小发光强度
+    pulseMax: 1.0,                // 最大发光强度
   }
 };
 
@@ -28,6 +37,12 @@ let selectedMuscle = null;       // 当前选中的肌肉（单选模式）
 let selectedMuscles = new Set(); // 多选的肌肉集合
 let hoveredMuscle = null;        // 当前悬停的肌肉
 let originalMaterials = new Map(); // 存储原始材质
+let skeletonHelper = null;       // 骨架辅助显示
+let skeletonVisible = false;     // 骨架是否可见
+let boneLabels = [];             // 骨骼名称标签
+let bones = [];                  // 所有骨骼引用
+let jointSpheres = [];           // 关节球体
+let boneLines = [];              // 骨骼连接线
 
 // ==================== 名称映射系统 ====================
 // 核心映射：原始名称 -> 显示名称
@@ -44,31 +59,13 @@ let meshByOriginalName = new Map();  // originalName -> mesh
 // LocalStorage key
 const STORAGE_KEY = 'muscle_display_names';
 
-// 从 JSON 文件加载默认肌肉名称映射
-async function loadDefaultMuscleNames() {
-  try {
-    const response = await fetch('/data/muscle_merge.json');
-    if (response.ok) {
-      const mapping = await response.json();
-      Object.entries(mapping).forEach(([original, display]) => {
-        // 只有当 localStorage 中没有该映射时才使用默认值
-        if (!originalToDisplayName.has(original)) {
-          originalToDisplayName.set(original, display);
-        }
-      });
-      console.log(`📂 Loaded ${Object.keys(mapping).length} default muscle names from JSON`);
-    }
-  } catch (e) {
-    console.error('Failed to load default muscle names from JSON:', e);
-  }
-}
-
 // 从 localStorage 加载映射
 function loadNameMappingFromStorage() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const mapping = JSON.parse(stored);
+      originalToDisplayName.clear();
       Object.entries(mapping).forEach(([original, display]) => {
         originalToDisplayName.set(original, display);
       });
@@ -206,6 +203,9 @@ function setupEventListeners() {
   });
   document.getElementById('import-file-input').addEventListener('change', importFromJsonFile);
   document.getElementById('btn-reset-all').addEventListener('click', resetAllNames);
+  
+  // Skeleton toggle
+  document.getElementById('btn-toggle-skeleton').addEventListener('click', toggleSkeleton);
 }
 
 // ==================== Model Loading ====================
@@ -236,19 +236,19 @@ function loadModel() {
 
       scene.add(model);
       
-      // 先从 localStorage 加载用户自定义的名称映射
+      // 创建骨架可视化
+      setupSkeletonHelper(model);
+      
+      // 从 localStorage 加载保存的名称映射
       loadNameMappingFromStorage();
       
-      // 然后从 JSON 文件加载默认肌肉名称（不会覆盖已有的映射）
-      loadDefaultMuscleNames().then(() => {
-        // Build sidebar muscle list
-        buildMuscleList();
-        
-        // Hide loading indicator
-        document.getElementById('loading').style.display = 'none';
-        
-        console.log(`Loaded ${muscleMeshes.length} muscle meshes`);
-      });
+      // Build sidebar muscle list
+      buildMuscleList();
+      
+      // Hide loading indicator
+      document.getElementById('loading').style.display = 'none';
+      
+      console.log(`Loaded ${muscleMeshes.length} muscle meshes`);
     },
     (progress) => {
       const percent = (progress.loaded / progress.total * 100).toFixed(0);
@@ -262,7 +262,7 @@ function loadModel() {
 }
 
 function setupMuscleMesh(mesh) {
-  // Create muscle material
+  // Create muscle material with emissive support for glow effects
   const material = new THREE.MeshPhysicalMaterial({
     color: CONFIG.colors.defaultMuscle,
     transparent: true,
@@ -270,6 +270,8 @@ function setupMuscleMesh(mesh) {
     side: THREE.DoubleSide,
     roughness: 0.5,
     metalness: 0.1,
+    emissive: 0x000000,         // 发光颜色（初始关闭）
+    emissiveIntensity: 0,       // 发光强度
   });
   
   // Store original material
@@ -296,6 +298,286 @@ function setupOtherMesh(mesh) {
   
   mesh.material = material;
   mesh.userData.isMuscle = false;
+}
+
+// ==================== Skeleton Visualization ====================
+function setupSkeletonHelper(model) {
+  // 收集所有骨骼
+  bones = [];
+  model.traverse((child) => {
+    if (child.isBone) {
+      bones.push(child);
+    }
+  });
+  
+  if (bones.length === 0) {
+    console.log('⚠️ No skeleton found in the model');
+    return;
+  }
+  
+  console.log(`🦴 Found ${bones.length} bones`);
+  
+  // 尝试创建 SkeletonHelper
+  model.traverse((child) => {
+    if (child.isSkinnedMesh && child.skeleton && !skeletonHelper) {
+      skeletonHelper = new THREE.SkeletonHelper(child);
+      skeletonHelper.visible = skeletonVisible;
+      skeletonHelper.renderOrder = 1000;
+      scene.add(skeletonHelper);
+      console.log(`🦴 Created SkeletonHelper with ${child.skeleton.bones.length} bones`);
+    }
+  });
+  
+  // 创建自定义骨骼连接线（使用圆柱体代替线条，更明显）
+  createBoneConnections();
+  
+  // 为每个骨骼创建关节球体和名称标签
+  createBoneLabelsAndJoints();
+  
+  console.log(`🦴 Found ${bones.length} bones`);
+}
+
+// 创建骨骼标签和关节球体
+// 当前选中的关节
+let selectedJoint = null;
+let hoveredJoint = null;
+
+// 创建骨骼连接线（使用圆柱体，更明显）
+function createBoneConnections() {
+  // 清除旧的连接线
+  boneLines.forEach(line => scene.remove(line));
+  boneLines = [];
+  
+  // 连接线材质
+  const lineMaterial = new THREE.MeshBasicMaterial({
+    color: 0x00ff00,
+    transparent: true,
+    opacity: 0.8,
+    depthTest: false,
+    depthWrite: false,
+  });
+  
+  // 为每个有父骨骼的骨骼创建连接线
+  bones.forEach((bone) => {
+    if (bone.parent && bone.parent.isBone) {
+      // 创建一个圆柱体作为骨骼连接
+      const cylinder = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.0015, 0.0015, 1, 6),
+        lineMaterial.clone()
+      );
+      cylinder.visible = skeletonVisible;
+      cylinder.renderOrder = 999;
+      cylinder.userData.childBone = bone;
+      cylinder.userData.parentBone = bone.parent;
+      scene.add(cylinder);
+      boneLines.push(cylinder);
+    }
+  });
+  
+  console.log(`🦴 Created ${boneLines.length} bone connections`);
+}
+
+// 更新骨骼连接线位置
+function updateBoneConnections() {
+  boneLines.forEach((cylinder) => {
+    const childBone = cylinder.userData.childBone;
+    const parentBone = cylinder.userData.parentBone;
+    
+    if (childBone && parentBone) {
+      const childPos = new THREE.Vector3();
+      const parentPos = new THREE.Vector3();
+      childBone.getWorldPosition(childPos);
+      parentBone.getWorldPosition(parentPos);
+      
+      // 计算中点和长度
+      const midPoint = new THREE.Vector3().addVectors(childPos, parentPos).multiplyScalar(0.5);
+      const length = childPos.distanceTo(parentPos);
+      
+      // 设置位置和缩放
+      cylinder.position.copy(midPoint);
+      cylinder.scale.y = length;
+      
+      // 设置朝向
+      cylinder.lookAt(childPos);
+      cylinder.rotateX(Math.PI / 2);
+    }
+  });
+}
+
+function createBoneLabelsAndJoints() {
+  // 清除旧的标签和球体
+  boneLabels.forEach(label => scene.remove(label));
+  jointSpheres.forEach(sphere => scene.remove(sphere));
+  boneLabels = [];
+  jointSpheres = [];
+  
+  // 关节球体材质
+  const jointGeometry = new THREE.SphereGeometry(0.006, 8, 8);
+  
+  bones.forEach((bone, index) => {
+    // 创建关节球体 - 每个球体有自己的材质以便单独改变颜色
+    const jointMaterial = new THREE.MeshBasicMaterial({
+      color: 0x00ff00,  // 绿色
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      opacity: 0.8,
+    });
+    
+    const sphere = new THREE.Mesh(jointGeometry, jointMaterial);
+    sphere.visible = skeletonVisible;
+    sphere.renderOrder = 1001;
+    sphere.userData.bone = bone;
+    sphere.userData.boneIndex = index;
+    sphere.userData.isJoint = true;  // 标记为关节
+    scene.add(sphere);
+    jointSpheres.push(sphere);
+    
+    // 创建文字标签 - 默认隐藏，只在点击时显示
+    const label = createTextSprite(bone.name);
+    label.visible = false;  // 默认隐藏
+    label.renderOrder = 1002;
+    label.userData.bone = bone;
+    label.userData.boneIndex = index;
+    scene.add(label);
+    boneLabels.push(label);
+  });
+}
+
+// 创建文字精灵
+function createTextSprite(text) {
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  
+  // 设置字体和测量文字
+  const fontSize = 48;
+  context.font = `bold ${fontSize}px Arial`;
+  const textWidth = context.measureText(text).width;
+  
+  // 设置 canvas 大小
+  canvas.width = textWidth + 20;
+  canvas.height = fontSize + 20;
+  
+  // 重新设置字体（canvas 大小改变后需要重设）
+  context.font = `bold ${fontSize}px Arial`;
+  
+  // 绘制背景（圆角矩形）
+  context.fillStyle = 'rgba(0, 0, 0, 0.7)';
+  const radius = 8;
+  context.beginPath();
+  context.moveTo(radius, 0);
+  context.lineTo(canvas.width - radius, 0);
+  context.quadraticCurveTo(canvas.width, 0, canvas.width, radius);
+  context.lineTo(canvas.width, canvas.height - radius);
+  context.quadraticCurveTo(canvas.width, canvas.height, canvas.width - radius, canvas.height);
+  context.lineTo(radius, canvas.height);
+  context.quadraticCurveTo(0, canvas.height, 0, canvas.height - radius);
+  context.lineTo(0, radius);
+  context.quadraticCurveTo(0, 0, radius, 0);
+  context.closePath();
+  context.fill();
+  
+  // 绘制文字
+  context.fillStyle = '#00ff00';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText(text, canvas.width / 2, canvas.height / 2);
+  
+  // 创建纹理和精灵
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  
+  const spriteMaterial = new THREE.SpriteMaterial({
+    map: texture,
+    depthTest: false,
+    depthWrite: false,
+    transparent: true,
+  });
+  
+  const sprite = new THREE.Sprite(spriteMaterial);
+  
+  // 设置精灵大小
+  const scale = 0.15;
+  sprite.scale.set(scale * canvas.width / canvas.height, scale, 1);
+  
+  return sprite;
+}
+
+// 更新骨骼标签和关节球体位置
+function updateBoneLabels() {
+  if (!skeletonVisible) return;
+  
+  const offset = new THREE.Vector3(0, 0.02, 0);  // 标签偏移
+  
+  for (let i = 0; i < bones.length; i++) {
+    const bone = bones[i];
+    const worldPos = new THREE.Vector3();
+    bone.getWorldPosition(worldPos);
+    
+    // 更新关节球体位置
+    if (jointSpheres[i]) {
+      jointSpheres[i].position.copy(worldPos);
+    }
+    
+    // 更新标签位置（稍微偏移以避免重叠）
+    if (boneLabels[i]) {
+      boneLabels[i].position.copy(worldPos).add(offset);
+    }
+  }
+  
+  // 更新骨骼连接线位置
+  updateBoneConnections();
+}
+
+function toggleSkeleton() {
+  if (bones.length === 0) {
+    console.log('No skeleton available');
+    return;
+  }
+  
+  skeletonVisible = !skeletonVisible;
+  
+  // 隐藏骨架时清除关节选择
+  if (!skeletonVisible) {
+    clearJointSelection();
+  }
+  
+  // 切换骨架线条显示（SkeletonHelper）
+  if (skeletonHelper) {
+    skeletonHelper.visible = skeletonVisible;
+  }
+  
+  // 切换自定义骨骼连接线显示
+  boneLines.forEach(line => {
+    line.visible = skeletonVisible;
+  });
+  
+  // 切换关节球体显示
+  jointSpheres.forEach(sphere => {
+    sphere.visible = skeletonVisible;
+    // 重置球体状态
+    sphere.material.color.setHex(0x00ff00);
+    sphere.scale.setScalar(1);
+  });
+  
+  // 标签默认全部隐藏（只有点击关节时才显示）
+  boneLabels.forEach(label => {
+    label.visible = false;
+  });
+  
+  // 立即更新位置
+  if (skeletonVisible) {
+    updateBoneLabels();
+  }
+  
+  // 更新按钮状态
+  const btn = document.getElementById('btn-toggle-skeleton');
+  if (btn) {
+    btn.classList.toggle('active', skeletonVisible);
+    btn.textContent = skeletonVisible ? '🦴 Hide Skeleton' : '🦴 Show Skeleton';
+  }
+  
+  console.log(`🦴 Skeleton visibility: ${skeletonVisible}`);
 }
 
 // ==================== Sidebar ====================
@@ -648,13 +930,39 @@ function selectMuscleGroup(meshes, displayName) {
   // 清除之前的高亮
   clearHighlight();
   
-  // 高亮所有相关的mesh
-  meshes.forEach(mesh => {
-    mesh.material.color.setHex(CONFIG.colors.highlightMuscle);
-    if (mesh.material.emissive) {
-      mesh.material.emissive.setHex(0x331111);
+  // 创建高亮mesh的Set用于快速查找
+  const highlightedSet = new Set(meshes.map(m => m.uuid));
+  
+  // 降低其他肌肉的透明度，让高亮肌肉更明显
+  muscleMeshes.forEach(muscle => {
+    if (!highlightedSet.has(muscle.uuid)) {
+      // 非高亮肌肉变淡
+      muscle.material.opacity = CONFIG.opacity.muscleWhenOtherHighlighted;
+      muscle.material.depthWrite = false;
+      muscle.renderOrder = 0;
     }
   });
+  
+  // 皮肤也变得更透明
+  otherMeshes.forEach(mesh => {
+    mesh.material.opacity = 0.05;
+  });
+  
+  // 高亮所有相关的mesh - 增强视觉效果
+  meshes.forEach(mesh => {
+    mesh.material.color.setHex(CONFIG.colors.highlightMuscle);
+    mesh.material.opacity = 1.0;  // 完全不透明
+    mesh.material.depthWrite = true;
+    mesh.renderOrder = 999;  // 最后渲染，显示在最前
+    
+    if (mesh.material.emissive) {
+      mesh.material.emissive.setHex(CONFIG.colors.highlightEmissive);
+      mesh.material.emissiveIntensity = 1.0;
+    }
+  });
+  
+  // 存储高亮的 meshes 用于脉动动画
+  highlightedMeshes = [...meshes];
   
   // 设置当前选中（使用第一个mesh作为代表）
   selectedMuscle = meshes[0];
@@ -685,11 +993,24 @@ function selectMuscle(mesh) {
 }
 
 function clearHighlight() {
+  // 清除高亮动画列表
+  highlightedMeshes = [];
+  
+  // 恢复肌肉的原始状态
   muscleMeshes.forEach(mesh => {
     mesh.material.color.setHex(CONFIG.colors.defaultMuscle);
+    mesh.material.opacity = CONFIG.opacity.muscle;
+    mesh.material.depthWrite = true;
+    mesh.renderOrder = 0;
     if (mesh.material.emissive) {
       mesh.material.emissive.setHex(0x000000);
+      mesh.material.emissiveIntensity = 0;
     }
+  });
+  
+  // 恢复皮肤的原始透明度
+  otherMeshes.forEach(mesh => {
+    mesh.material.opacity = CONFIG.opacity.otherMesh;
   });
 }
 
@@ -854,12 +1175,62 @@ function onMouseMove(event) {
   mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   
-  // Raycast only against muscle meshes
   raycaster.setFromCamera(mouse, camera);
-  const intersects = raycaster.intersectObjects(muscleMeshes, true);
+  
+  // 首先检测关节球体（如果骨架可见）
+  if (skeletonVisible && jointSpheres.length > 0) {
+    const jointIntersects = raycaster.intersectObjects(jointSpheres, false);
+    const jointHit = jointIntersects.find(i => i.object.visible && i.object.userData.isJoint);
+    
+    if (jointHit) {
+      const sphere = jointHit.object;
+      renderer.domElement.style.cursor = 'pointer';
+      
+      // 悬停效果
+      if (hoveredJoint !== sphere) {
+        // 重置之前悬停的关节
+        if (hoveredJoint && hoveredJoint !== selectedJoint) {
+          hoveredJoint.material.color.setHex(0x00ff00);
+          hoveredJoint.scale.setScalar(1);
+        }
+        
+        // 应用新的悬停效果
+        hoveredJoint = sphere;
+        if (sphere !== selectedJoint) {
+          sphere.material.color.setHex(0xffff00);  // 黄色悬停
+          sphere.scale.setScalar(1.5);  // 放大
+        }
+      }
+      
+      // 显示关节名称 tooltip
+      showTooltip(sphere.userData.bone.name, event.clientX, event.clientY);
+      return;  // 优先处理关节，不再检测肌肉
+    } else {
+      // 没有悬停在关节上，重置悬停状态
+      if (hoveredJoint && hoveredJoint !== selectedJoint) {
+        hoveredJoint.material.color.setHex(0x00ff00);
+        hoveredJoint.scale.setScalar(1);
+      }
+      hoveredJoint = null;
+    }
+  }
+  
+  // 检测肌肉 mesh
+  const intersects = raycaster.intersectObjects(muscleMeshes, false);
   
   // Find first visible muscle
-  const hit = intersects.find(i => i.object.visible && i.object.userData.isMuscle);
+  let hit = null;
+  for (const intersect of intersects) {
+    let obj = intersect.object;
+    while (obj) {
+      if (obj.visible && obj.userData.isMuscle) {
+        hit = { ...intersect, object: obj };
+        break;
+      }
+      obj = obj.parent;
+    }
+    if (hit) break;
+  }
   
   if (hit) {
     const mesh = hit.object;
@@ -870,25 +1241,39 @@ function onMouseMove(event) {
     // Hover effect
     if (hoveredMuscle !== mesh) {
       // Reset previous hover
-      if (hoveredMuscle && hoveredMuscle !== selectedMuscle) {
+      if (hoveredMuscle && hoveredMuscle !== selectedMuscle && !highlightedMeshes.includes(hoveredMuscle)) {
         hoveredMuscle.material.color.setHex(CONFIG.colors.defaultMuscle);
+        if (hoveredMuscle.material.emissive) {
+          hoveredMuscle.material.emissive.setHex(0x000000);
+          hoveredMuscle.material.emissiveIntensity = 0;
+        }
       }
       
-      // Apply new hover
+      // Apply new hover - 增强悬停效果
       hoveredMuscle = mesh;
-      if (mesh !== selectedMuscle) {
+      if (mesh !== selectedMuscle && !highlightedMeshes.includes(mesh)) {
         mesh.material.color.setHex(CONFIG.colors.hoverMuscle);
+        if (mesh.material.emissive) {
+          mesh.material.emissive.setHex(CONFIG.colors.hoverEmissive);
+          mesh.material.emissiveIntensity = 0.5;
+        }
       }
     }
     
-    // Show tooltip
-    showTooltip(mesh.name, event.clientX, event.clientY);
+    // Show tooltip - 显示自定义名称
+    const originalName = mesh.userData.originalName || mesh.name;
+    const displayName = originalToDisplayName.get(originalName) || originalName;
+    showTooltip(displayName, event.clientX, event.clientY);
   } else {
     // No hit - reset hover state
     renderer.domElement.style.cursor = 'default';
     
-    if (hoveredMuscle && hoveredMuscle !== selectedMuscle) {
+    if (hoveredMuscle && hoveredMuscle !== selectedMuscle && !highlightedMeshes.includes(hoveredMuscle)) {
       hoveredMuscle.material.color.setHex(CONFIG.colors.defaultMuscle);
+      if (hoveredMuscle.material.emissive) {
+        hoveredMuscle.material.emissive.setHex(0x000000);
+        hoveredMuscle.material.emissiveIntensity = 0;
+      }
     }
     hoveredMuscle = null;
     
@@ -897,15 +1282,81 @@ function onMouseMove(event) {
 }
 
 function onMouseClick(event) {
-  // Raycast
   raycaster.setFromCamera(mouse, camera);
-  const intersects = raycaster.intersectObjects(muscleMeshes, true);
+  
+  // 首先检测关节球体（如果骨架可见）
+  if (skeletonVisible && jointSpheres.length > 0) {
+    const jointIntersects = raycaster.intersectObjects(jointSpheres, false);
+    const jointHit = jointIntersects.find(i => i.object.visible && i.object.userData.isJoint);
+    
+    if (jointHit) {
+      selectJoint(jointHit.object);
+      return;  // 优先处理关节点击
+    }
+  }
+  
+  // 检测肌肉 mesh
+  const intersects = raycaster.intersectObjects(muscleMeshes, false);
   
   // Find first visible muscle
-  const hit = intersects.find(i => i.object.visible && i.object.userData.isMuscle);
+  let hit = null;
+  for (const intersect of intersects) {
+    let obj = intersect.object;
+    while (obj) {
+      if (obj.visible && obj.userData.isMuscle) {
+        hit = { ...intersect, object: obj };
+        break;
+      }
+      obj = obj.parent;
+    }
+    if (hit) break;
+  }
   
   if (hit) {
+    // 点击肌肉时清除选中的关节
+    clearJointSelection();
     selectMuscle(hit.object);
+  } else {
+    // 点击空白处清除关节选择
+    clearJointSelection();
+  }
+}
+
+// 选中关节
+function selectJoint(sphere) {
+  // 清除之前选中的关节
+  clearJointSelection();
+  
+  selectedJoint = sphere;
+  const boneIndex = sphere.userData.boneIndex;
+  
+  // 高亮选中的关节
+  sphere.material.color.setHex(0xff6600);  // 橙色
+  sphere.scale.setScalar(2);
+  
+  // 显示对应的标签
+  if (boneLabels[boneIndex]) {
+    boneLabels[boneIndex].visible = true;
+  }
+  
+  console.log(`🦴 Selected joint: ${sphere.userData.bone.name}`);
+}
+
+// 清除关节选择
+function clearJointSelection() {
+  if (selectedJoint) {
+    const boneIndex = selectedJoint.userData.boneIndex;
+    
+    // 恢复颜色和大小
+    selectedJoint.material.color.setHex(0x00ff00);
+    selectedJoint.scale.setScalar(1);
+    
+    // 隐藏标签
+    if (boneLabels[boneIndex]) {
+      boneLabels[boneIndex].visible = false;
+    }
+    
+    selectedJoint = null;
   }
 }
 
@@ -929,9 +1380,32 @@ function onWindowResize() {
 }
 
 // ==================== Animation Loop ====================
+// 存储高亮的 meshes 用于脉动动画
+let highlightedMeshes = [];
+
 function animate() {
   requestAnimationFrame(animate);
   controls.update();
+  
+  // 高亮肌肉脉动效果
+  if (highlightedMeshes.length > 0) {
+    const time = performance.now() * 0.001;  // 转换为秒
+    const pulse = (Math.sin(time * CONFIG.highlight.pulseSpeed * Math.PI) + 1) / 2;  // 0-1
+    const intensity = CONFIG.highlight.pulseMin + pulse * (CONFIG.highlight.pulseMax - CONFIG.highlight.pulseMin);
+    
+    highlightedMeshes.forEach(mesh => {
+      if (mesh.material.emissive) {
+        // 脉动发光强度
+        mesh.material.emissiveIntensity = intensity;
+      }
+    });
+  }
+  
+  // 更新骨骼标签位置（如果骨架可见）
+  if (skeletonVisible) {
+    updateBoneLabels();
+  }
+  
   renderer.render(scene, camera);
 }
 
